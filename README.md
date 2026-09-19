@@ -6,6 +6,8 @@
 
 包含 Word 内容控件填充、中文正文截图、HTML 关键词高亮、PDF/图片裁剪、Excel 左右对照排版、Word 哈希校验、中性模板和纯虚构演示生成器。真实公司材料、机构模板、历史研报、密钥和个人目录均不包含在仓库内。
 
+英文材料使用“研报正文｜原文截图｜中文辅助译文”三栏，便于审核人员对照；中文材料保留两栏。模型负责忠实翻译，脚本检查缺项并排版，不调用额外的翻译服务。
+
 ## 安装
 
 下载或克隆本仓库，把 `skills/earnings-report-workpaper` 整个文件夹复制到 Codex 的 Skills 目录（`CODEX_HOME/skills`，未设置时为用户主目录下的 `.codex/skills`）。必须连同 scripts、references、agents 和 requirements 一起复制。

@@ -56,6 +56,20 @@ class Workflow(unittest.TestCase):
         cfg=self.config();cfg['sections'][0]['points'][0]['evidence_ids']=[]
         with self.assertRaisesRegex(ValueError,'requires evidence'):self.validate(cfg)
 
+    def test_english_translation_required(self):
+        cfg=self.config();del cfg['evidence']['source_0']['translation_zh']
+        with self.assertRaisesRegex(ValueError,'translation_zh'):self.validate(cfg)
+
+    def test_translation_excerpt_required(self):
+        cfg=self.config();del cfg['evidence']['source_0']['source_excerpt']
+        with self.assertRaisesRegex(ValueError,'source_excerpt'):self.validate(cfg)
+
+    def test_legacy_chinese_source_accepted(self):
+        cfg=self.config()
+        for meta in cfg['evidence'].values():
+            for key in ['source_language','source_excerpt','translation_zh']:meta.pop(key)
+        self.validate(cfg)
+
     def test_fabricated_point_rejected(self):
         cfg=self.config();cfg['sections'][0]['points'][0]['text']='新增的无出处句子。'
         with self.assertRaisesRegex(ValueError,'not in'):self.validate(cfg)
@@ -91,12 +105,17 @@ class Workflow(unittest.TestCase):
         wb=load_workbook(path)
         self.assertEqual(wb.sheetnames,[s['sheet'] for s in self.cfg['sections']])
         for ws in wb:
-            self.assertEqual(len(ws._images),4)
+            self.assertEqual(len(ws._images),6)
+            self.assertEqual(sum(img.anchor._from.col==4 for img in ws._images),2)
+            self.assertIn('$E$',str(ws.print_area))
             self.assertFalse(any(c.data_type=='e' for row in ws for c in row))
         wb.close()
         manifest=json.loads((self.base/'process/visual_workpaper_manifest.json').read_text(encoding='utf-8'))
         self.assertEqual(len(manifest['source_screenshots']),4)
-        for item in manifest['source_screenshots'].values():self.assertGreater(item['highlight_count'],0)
+        for eid,item in manifest['source_screenshots'].items():
+            self.assertGreater(item['highlight_count'],0)
+            self.assertEqual(item['translation_zh'],self.cfg['evidence'][eid]['translation_zh'])
+            self.assertTrue(Path(item['translation_image']).is_file())
 
 
 if __name__=='__main__':unittest.main()

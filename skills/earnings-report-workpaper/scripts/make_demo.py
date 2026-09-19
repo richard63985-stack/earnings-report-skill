@@ -15,6 +15,10 @@ def create_demo(base):
     bodies=['演示公司本季收入为100万元，同比增长25%。','订阅业务收入为60万元，占总收入60%。',
             '演示AI产品付费客户达到20家。','毛利率为70%，同比提升5个百分点。']
     titles=['事件','投资要点第一段','投资要点第二段','投资要点第三段']
+    originals=['Quarterly revenue was RMB 1 million, up 25% year over year.',
+              'Subscription revenue was RMB 600,000, representing 60% of total revenue.',
+              'The demo AI product reached 20 paying customers.',
+              'Gross margin was 70%, up 5 percentage points year over year.']
     md='# 演示公司：收入增长，产品应用扩展\n\n## 事件\n\n'+bodies[0]+'\n\n## 投资要点\n\n'
     for i in range(1,4): md+='▌'+titles[i]+'\n\n'+bodies[i]+'\n\n'
     md+='## 投资建议\n\n虚构案例，仅用于工具测试，不提供投资评级。\n\n## 风险提示\n\n演示数据不代表任何真实公司。\n'
@@ -25,8 +29,10 @@ def create_demo(base):
     evidence={};sections=[]
     for i,(title,body) in enumerate(zip(titles,bodies)):
         eid=f'source_{i}'
-        (base/f'{eid}.html').write_text('<html><head><meta charset="utf-8"></head><body><h1>虚构测试公告</h1><p>'+body+'</p><p>仅为脚本测试，不代表真实公司。</p></body></html>',encoding='utf-8')
-        evidence[eid]={'source':f'{eid}.html','label':f'{eid}.html','terms':[body]}
+        original=originals[i]
+        (base/f'{eid}.html').write_text('<html><head><meta charset="utf-8"></head><body><h1>Fictional earnings release</h1><p>'+original+'</p><p>Synthetic test data. Not a real company.</p></body></html>',encoding='utf-8')
+        evidence[eid]={'source':f'{eid}.html','label':f'{eid}.html','terms':[original],
+                       'source_language':'en','source_excerpt':original,'translation_zh':body}
         sections.append({'sheet':title,'body':body,'overview_evidence':eid,'points':[{'text':body,'evidence_ids':[eid]}]})
     cfg={'company_dir':'.','word_path':'report.docx','word_sha256':freeze(base/'report.docx')['word_sha256'],
          'word_confirmed':True,'output_xlsx':'workpaper.xlsx','process_dir':'process','evidence':evidence,'sections':sections}

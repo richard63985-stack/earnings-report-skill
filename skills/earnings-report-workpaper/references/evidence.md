@@ -30,4 +30,16 @@
 
 PDF evidence：source、label、page_index、clip，可加 page（印刷页码）及 calc（计算说明）。图片 evidence：source、label、clip；已人工裁剪高亮的图可用 pre_highlighted=true。原文件始终不改。evidence ID 限英文、数字、下划线、短横线。
 
+英文证据同时填写以下字段（适用于 HTML、PDF 和图片）：
+
+```json
+{
+  "source_language": "en",
+  "source_excerpt": "Gross margin was 70%, up 5 percentage points year over year.",
+  "translation_zh": "毛利率为70%，同比提升5个百分点。"
+}
+```
+
+source_excerpt 对应截图中的证据原文，translation_zh 是忠实翻译，不是研报结论。en/en-US/en-GB 或 mixed 来源必需中文译文；任何译文都必须有对应原文摘录。中文来源可用 zh 并省略译文。脚本不检验翻译语义正确性，交付前由 agent 逐项核对。
+
 points 默认使用 text；整段高亮模式设置 left_mode=full_body_highlight 与 highlights。每一点必须有 evidence_ids，且原文必须出现在对应的 Word 段落中。不要把释义改写混入底稿左侧。

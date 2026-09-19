@@ -456,6 +456,15 @@ def crop_image(path: Path, out_path: Path, clip: list[int] | None = None) -> Non
 
 
 def validate_source_meta(evidence_id: str, meta: dict, source_path: Path) -> None:
+    language = str(meta.get("source_language", "")).lower()
+    translated = meta.get("translation_zh", "")
+    excerpt = meta.get("source_excerpt", "")
+    if language.startswith("en") or language == "mixed":
+        if not isinstance(translated, str) or not translated.strip():
+            raise ValueError(f"{evidence_id}: English evidence requires translation_zh")
+    if translated:
+        if not isinstance(translated, str) or not isinstance(excerpt, str) or not excerpt.strip():
+            raise ValueError(f"{evidence_id}: translation requires source_excerpt")
     suffix = source_path.suffix.lower()
     allow_unhighlighted = bool(meta.get("allow_unhighlighted"))
     pre_highlighted = bool(meta.get("pre_highlighted"))
@@ -572,6 +581,17 @@ def make_source_assets(cfg: dict, dirs: dict[str, Path], base_dir: Path) -> dict
         with Image.open(item["image"]) as img:
             item["width"] = img.width
             item["height"] = img.height
+        meta = evidence_cfg[evidence_id]
+        if meta.get("translation_zh"):
+            translated = make_text_image(
+                "", "中文译文（辅助翻译）", meta["translation_zh"],
+                dirs["source"] / f"{evidence_id}_translation.png",
+                include_sheet_title=False, width=900,
+            )
+            item["translation_image"] = translated["path"]
+            item["translation_zh"] = meta["translation_zh"]
+            item["source_excerpt"] = meta["source_excerpt"]
+            item["source_language"] = meta.get("source_language", "")
     return manifest
 
 
@@ -672,20 +692,23 @@ def style_note_cell(cell, fill: str = "FFFFFF") -> None:
     cell.border = Border(left=side, right=side, top=side, bottom=side)
 
 
-def add_separator(ws, row: int) -> None:
+def add_separator(ws, row: int, bilingual: bool = False) -> None:
     ws.row_dimensions[row].height = 12
     fill = PatternFill("solid", fgColor="FFF2CC")
     side = Side(style="thin", color="F1C232")
-    for col in ("A", "B", "C", "D"):
+    for col in (("A", "B", "C", "D", "E") if bilingual else ("A", "B", "C", "D")):
         cell = ws[f"{col}{row}"]
         cell.fill = fill
         cell.border = Border(left=side, right=side, top=side, bottom=side)
 
 
-def configure_sheet(ws) -> None:
+def configure_sheet(ws, bilingual: bool = False) -> None:
     ws.sheet_view.showGridLines = False
     for col, width in {"A": 94, "B": 4, "C": 128, "D": 28}.items():
         ws.column_dimensions[col].width = width
+    if bilingual:
+        ws.column_dimensions["D"].width = 4
+        ws.column_dimensions["E"].width = 94
     ws.sheet_format.defaultRowHeight = 18
     ws.freeze_panes = "A1"
     ws.sheet_properties.pageSetUpPr.fitToPage = True
@@ -760,7 +783,10 @@ def create_workbook(
 
     for section in sections:
         ws = wb.create_sheet(section["sheet"])
-        configure_sheet(ws)
+        used_ids = [section["overview_evidence"]] + [ev for point in section["points"] for ev in point["evidence_ids"]]
+        bilingual = any(source_manifest[ev].get("translation_image") for ev in used_ids)
+        configure_sheet(ws, bilingual)
+        source_width = 900 if bilingual else 1180
 
         para_info = para_manifest[section["sheet"]]
         first_evidence = source_manifest[section["overview_evidence"]]
@@ -773,7 +799,10 @@ def create_workbook(
             ws["C2"] = first_evidence["calc"]
             style_note_cell(ws["C2"], fill="FFF2CC")
             image_row = 3
-        _, ev_h = add_image(ws, Path(first_evidence["image"]), f"C{image_row}", max_width=1180, max_height=520)
+        _, ev_h = add_image(ws, Path(first_evidence["image"]), f"C{image_row}", max_width=source_width, max_height=520)
+        if first_evidence.get("translation_image"):
+            _, translated_h = add_image(ws, Path(first_evidence["translation_image"]), f"E{image_row}", max_width=660)
+            ev_h = max(ev_h, translated_h)
         start_note_row = max(rows_for_px(para_h), rows_for_px(ev_h) + note_rows)
         current_row = start_note_row + 4
 
@@ -793,19 +822,23 @@ def create_workbook(
                     style_note_cell(ws[f"C{right_row + 1}"], fill="FFF2CC")
                     note_rows += 1
                 image_row = right_row + note_rows + 1
-                _, height = add_image(ws, Path(ev["image"]), f"C{image_row}", max_width=1180, max_height=520)
+                _, height = add_image(ws, Path(ev["image"]), f"C{image_row}", max_width=source_width, max_height=520)
+                if ev.get("translation_image"):
+                    _, translated_h = add_image(ws, Path(ev["translation_image"]), f"E{image_row}", max_width=660)
+                    height = max(height, translated_h)
                 needed = note_rows + 1 + rows_for_px(height)
                 right_row += needed + 2
 
             group_rows = max(left_rows, right_row - current_row)
             if idx < len(section["points"]) - 1:
                 separator_row = current_row + group_rows
-                add_separator(ws, separator_row)
+                add_separator(ws, separator_row, bilingual)
                 current_row = separator_row + 3
             else:
                 current_row += group_rows + 1
 
-        ws.print_area = f"A1:D{max(current_row, 40)}"
+        last_column = "E" if bilingual else "D"
+        ws.print_area = f"A1:{last_column}{max(current_row, 40)}"
 
     output_xlsx.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_xlsx)
