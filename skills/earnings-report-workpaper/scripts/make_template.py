@@ -23,7 +23,7 @@ def create(path):
         sdt.append(props)
         content = OxmlElement('w:sdtContent')
         for _ in range(count):
-            p=OxmlElement('w:p');r=OxmlElement('w:r');t=OxmlElement('w:t');t.text='文字待填充'
+            p=OxmlElement('w:p');r=OxmlElement('w:r');t=OxmlElement('w:t');t.text={'副标题':'财报点评','投资评级':'未评级','评级变动':'不适用'}.get(alias,'文字待填充')
             r.append(t);p.append(r);content.append(p)
         sdt.append(content)
         doc.element.body.insert(len(doc.element.body)-1, sdt)

@@ -21,9 +21,10 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from bs4 import BeautifulSoup
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.worksheet.pagebreak import Break
 from PIL import Image, ImageDraw, ImageFont
 from playwright.sync_api import sync_playwright
 
@@ -330,7 +331,7 @@ def highlighted_html(source_path: Path, out_path: Path, terms: list[str]) -> Pat
         return best;
       }};
       for (const node of nodes) {{
-        if (!node.parentNode) continue;
+        if (!node.parentNode || !node.parentElement.getClientRects().length || getComputedStyle(node.parentElement).visibility === "hidden") continue;
         const raw = node.nodeValue || '';
         if (!raw.trim()) continue;
         const frag = document.createDocumentFragment();
@@ -375,7 +376,8 @@ def screenshot_html(
     allow_missing_terms: bool = False,
 ) -> dict:
     page.goto(html_path.as_uri(), wait_until="load")
-    page.wait_for_timeout(500)
+    page.evaluate("async () => { if (document.fonts) await document.fonts.ready; }")
+    page.wait_for_timeout(200)
     count = int(page.evaluate("window.__codexHighlightCount || 0"))
     missing_terms = page.evaluate("window.__codexMissingTerms || []")
     term_hits = page.evaluate("window.__codexTermHits || {}")
@@ -390,14 +392,15 @@ def screenshot_html(
     clip = page.evaluate(
         """() => {
           const marks = Array.from(document.querySelectorAll('mark.codex-highlight'));
-          const rects = marks.map((m) => m.getBoundingClientRect()).filter((r) => r.width > 0 && r.height > 0);
+          const blocks = marks.map(m => m.closest('table') || m.closest('p,li,blockquote,h1,h2,h3,h4') || m);
+          const rects = blocks.map((m) => m.getBoundingClientRect()).filter((r) => r.width > 0 && r.height > 0);
           if (!rects.length) return null;
           const doc = document.documentElement;
           const body = document.body || doc;
           const pageWidth = Math.max(doc.scrollWidth, body.scrollWidth, doc.clientWidth);
           const pageHeight = Math.max(doc.scrollHeight, body.scrollHeight, doc.clientHeight);
-          let left = Math.min(...rects.map((r) => r.left + window.scrollX));
-          let right = Math.max(...rects.map((r) => r.right + window.scrollX));
+          let left = 0;
+          let right = pageWidth;
           let top = Math.min(...rects.map((r) => r.top + window.scrollY));
           let bottom = Math.max(...rects.map((r) => r.bottom + window.scrollY));
           const padX = 160, padY = 90;
@@ -428,15 +431,9 @@ def screenshot_html(
         page.screenshot(path=str(out_path), full_page=False)
         return {"highlight_count": count, "missing_terms": missing_terms, "term_hits": term_hits}
 
-    full_path = out_path.with_name(f"{out_path.stem}_full.png")
-    page.screenshot(path=str(full_path), full_page=True)
-    with Image.open(full_path) as img:
-        left = max(0, min(int(clip["x"]), img.width - 1))
-        top = max(0, min(int(clip["y"]), img.height - 1))
-        right = max(left + 1, min(left + int(clip["width"]), img.width))
-        bottom = max(top + 1, min(top + int(clip["height"]), img.height))
-        img.crop((left, top, right, bottom)).save(out_path)
-    full_path.unlink(missing_ok=True)
+    if clip["height"] > 3500:
+        raise ValueError("Evidence span is too tall; split sources or use a focused official PDF/table image")
+    page.screenshot(path=str(out_path), clip=clip, full_page=True)
     return {"highlight_count": count, "missing_terms": missing_terms, "term_hits": term_hits}
 
 
@@ -601,18 +598,42 @@ def validate_config(cfg: dict, base_dir: Path, output_xlsx: Path, process_dir: P
         raise ValueError("output_xlsx must end in .xlsx")
     if output_xlsx.exists():
         raise ValueError("Output already exists; choose a new version")
-    if not cfg.get("word_confirmed"):
-        raise ValueError("User must confirm final Word before workpaper generation")
+    if (process_dir / "visual_workpaper_manifest.json").exists():
+        raise ValueError("Process directory belongs to an earlier output; choose a new version directory")
+    if cfg.get("word_confirmed") is not True:
+        auth = cfg.get("generation_authorization", {})
+        if auth.get("mode") != "delegated_review" or auth.get("authorized") is not True or not str(auth.get("user_instruction", "")).strip() or not str(auth.get("scope", "")).strip():
+            raise ValueError("Require genuine Word confirmation or explicit delegated-review authorization")
+        review_path = resolve_path(auth.get("review_record", ""), base_dir)
+        if not review_path.is_file():
+            raise ValueError("Delegated review record is missing")
+        review = json.loads(review_path.read_text(encoding="utf-8-sig"))
+        if review.get("passed") is not True or review.get("word_sha256") != cfg.get("word_sha256") or not str(review.get("reviewer", "")).strip():
+            raise ValueError("Delegated review must pass and identify the reviewer and exact Word hash")
     word_path = resolve_path(cfg["word_path"], base_dir)
     if not word_path.exists():
         raise FileNotFoundError(f"Word file not found: {word_path}")
 
     if hashlib.sha256(word_path.read_bytes()).hexdigest() != cfg.get("word_sha256"):
-        raise ValueError("Word hash changed or missing; obtain confirmation and refresh mapping")
+        raise ValueError("Word hash changed or missing; refresh mapping and the applicable confirmation or review record")
     paragraphs = extract_docx_paragraphs(word_path)
     sections = cfg.get("sections", [])
-    if not sections:
-        raise ValueError("Config must include sections")
+    if [sec.get("sheet") for sec in sections] != ["事件", "投资要点第一段", "投资要点第二段", "投资要点第三段"]:
+        raise ValueError("Require the event and three investment sections in order")
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    with zipfile.ZipFile(word_path) as z:
+        document = ET.fromstring(z.read("word/document.xml"))
+    controls = {}
+    for control in document.findall(".//w:sdt", ns):
+        alias = control.find("w:sdtPr/w:alias", ns)
+        content = control.find("w:sdtContent", ns)
+        if alias is not None and content is not None:
+            controls[alias.get("{" + ns["w"] + "}val")] = ["".join(t.text or "" for t in par.findall(".//w:t", ns)) for par in content.findall(".//w:p", ns)]
+    if "事件公告" in controls and "摘要" in controls:
+        expected = ["".join(controls["事件公告"])] + controls["摘要"][1:6:2]
+        if [select_body(paragraphs, sec) for sec in sections] != expected:
+            raise ValueError("Configured sections do not match the four final Word bodies")
+    review_mode = any("review_inputs" in point or "review_result" in point for sec in sections for point in sec.get("points", []))
     evidence = cfg.get("evidence", {})
     if not evidence:
         raise ValueError("Config must include evidence")
@@ -634,7 +655,11 @@ def validate_config(cfg: dict, base_dir: Path, output_xlsx: Path, process_dir: P
         points = section.get("points") or []
         if not points:
             raise ValueError(f"{sheet}: must include at least one point")
+        if all(point.get("left_mode", "point_text") == "point_text" for point in points) and "".join(point.get("text", "") for point in points) != body:
+            raise ValueError(f"{sheet}: points must cover the complete body in order")
         for idx, point in enumerate(points, start=1):
+            if review_mode and not all(isinstance(point.get(k), str) and point[k].strip() for k in ("review_inputs", "review_result")):
+                raise ValueError("Summary-first layout requires review_inputs and review_result for every point")
             if not point.get("evidence_ids"):
                 raise ValueError("Every point requires evidence_ids")
             selected = point.get("highlights", []) if point.get("left_mode") == "full_body_highlight" else [point.get("text", "")]
@@ -771,7 +796,7 @@ def make_text_assets(sections: list[dict], dirs: dict[str, Path]) -> tuple[dict,
     return para_manifest, point_manifest
 
 
-def create_workbook(
+def create_legacy_workbook(
     output_xlsx: Path,
     sections: list[dict],
     para_manifest: dict,
@@ -844,6 +869,88 @@ def create_workbook(
     wb.save(output_xlsx)
 
 
+def create_workbook(output_xlsx, sections, para_manifest, point_manifest, source_manifest):
+    if not any("review_inputs" in p for s in sections for p in s["points"]):
+        return create_legacy_workbook(output_xlsx, sections, para_manifest, point_manifest, source_manifest)
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    def text(ws, address, value, heading=False):
+        cell = ws[address]
+        cell.value = value
+        cell.font = Font(name="Microsoft YaHei", size=18, bold=heading)
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+        cell.fill = PatternFill("solid", fgColor="FFF2CC" if heading else "FFFFFF")
+
+    def evidence_size(ev):
+        _, height = scaled_dims(Path(ev["image"]), 900, 520)
+        th = scaled_dims(Path(ev["translation_image"]), 660)[1] if ev.get("translation_image") else 0
+        note_height = max(30, math.ceil(len(ev["note"]) / 36) * 28)
+        return max(height, th), note_height, (30 + note_height) * 4 / 3 + max(height, th) + 72
+
+    def reserve(ws, row, block):
+        # ponytail: A3 layout uses a conservative pixel budget; verify the exported pages.
+        if block > 1250:
+            raise ValueError("Evidence group exceeds a print page; split the source/translation")
+        start = getattr(ws, "_evidence_page_start", 1)
+        used = sum((ws.row_dimensions[i].height or 18) * 4 / 3 for i in range(start, row))
+        if used + block > 1250 and row > start:
+            ws.row_breaks.append(Break(id=row - 1))
+            ws._evidence_page_start = row
+
+    def evidence(ws, row, key, label):
+        ev = source_manifest[key]
+        height, note_height, block = evidence_size(ev)
+        reserve(ws, row, block)
+        text(ws, f"C{row}", label + "｜" + key, True)
+        text(ws, f"E{row}", "中文译文（辅助翻译）" if ev.get("translation_image") else "", True)
+        ws.row_dimensions[row].height = 30
+        text(ws, f"C{row + 1}", ev["note"])
+        ws.row_dimensions[row + 1].height = note_height
+        add_image(ws, Path(ev["image"]), f"C{row + 2}", 900, 520)
+        if ev.get("translation_image"):
+            add_image(ws, Path(ev["translation_image"]), f"E{row + 2}", 660)
+        return row + 2 + math.ceil(height / 24) + 3
+
+    for section in sections:
+        ws = wb.create_sheet(section["sheet"])
+        configure_sheet(ws, True)
+        ws.page_setup.paperSize = ws.PAPERSIZE_A3
+        ws.sheet_view.zoomScale = 65
+        _, h = add_image(ws, Path(para_manifest[section["sheet"]]["path"]), "A1", 660)
+        row = max(evidence(ws, 1, section["overview_evidence"], "整段概览"), math.ceil(h / 24) + 3)
+        add_separator(ws, row, True)
+        row += 2
+        for i, point in enumerate(section["points"], 1):
+            values = [point_body_for_image(section, point), point["review_inputs"], point["review_result"]]
+            lines = max(sum(max(1, math.ceil(sum(1 if ord(c) > 255 else .55 for c in line) / width)) for line in value.split("\n")) for value, width in zip(values, [26, 36, 26]))
+            height = max(96, lines * 28 + 10)
+            if height > 400:
+                raise ValueError("Review summary is too long for one Excel row; split the sentence group")
+            first_block = evidence_size(source_manifest[point["evidence_ids"][0]])[2]
+            reserve(ws, row, (30 + height + 18) * 4 / 3 + first_block)
+            for col, value in [("A", f"{i:02d}｜" + point.get("review_title", "逐句核对")), ("C", "核对数据（对应下方来源编号）"), ("E", "计算与结论（辅助核验）")]:
+                text(ws, f"{col}{row}", value, True)
+            ws.row_dimensions[row].height = 30
+            for col, value in zip(["A", "C", "E"], values):
+                text(ws, f"{col}{row + 1}", value)
+            ws.row_dimensions[row + 1].height = height
+            row += 3
+            for n, key in enumerate(point["evidence_ids"], 1):
+                row = evidence(ws, row, key, f"来源{n}")
+            add_separator(ws, row, True)
+            row += 2
+        ws.print_area = f"A1:E{row - 1}"
+    output_xlsx.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(output_xlsx)
+    actual = load_workbook(output_xlsx)
+    for section in sections:
+        values = [cell.value for row in actual[section["sheet"]] for cell in row]
+        for point in section["points"]:
+            if not all(point[k] in values for k in ("review_inputs", "review_result")):
+                raise ValueError("Exported review summary differs from configuration")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, help="Path to workpaper JSON config.")
@@ -880,6 +987,11 @@ def main() -> None:
     create_workbook(output_xlsx, sections, para_manifest, point_manifest, source_manifest)
 
     manifest = {
+        "word_sha256": cfg["word_sha256"],
+        "xlsx_sha256": hashlib.sha256(output_xlsx.read_bytes()).hexdigest(),
+        "config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
+        "word_confirmed": cfg.get("word_confirmed") is True,
+        "generation_authorization": cfg.get("generation_authorization"),
         "word": str(word_path),
         "output": str(output_xlsx),
         "sections": sections,

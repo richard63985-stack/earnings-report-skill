@@ -33,7 +33,7 @@ def create_demo(base):
         (base/f'{eid}.html').write_text('<html><head><meta charset="utf-8"></head><body><h1>Fictional earnings release</h1><p>'+original+'</p><p>Synthetic test data. Not a real company.</p></body></html>',encoding='utf-8')
         evidence[eid]={'source':f'{eid}.html','label':f'{eid}.html','terms':[original],
                        'source_language':'en','source_excerpt':original,'translation_zh':body}
-        sections.append({'sheet':title,'body':body,'overview_evidence':eid,'points':[{'text':body,'evidence_ids':[eid]}]})
+        sections.append({'sheet':title,'body':body,'overview_evidence':eid,'points':[{'text':body,'evidence_ids':[eid], 'review_inputs':'来源1：虚构公告中的本期数据、期间和口径。', 'review_result':'直接披露值与来源1对应；该演示不用于真实投资判断。'}]})
     cfg={'company_dir':'.','word_path':'report.docx','word_sha256':freeze(base/'report.docx')['word_sha256'],
          'word_confirmed':True,'output_xlsx':'workpaper.xlsx','process_dir':'process','evidence':evidence,'sections':sections}
     # Synthetic test only. Never copy this approval flag into a real report.

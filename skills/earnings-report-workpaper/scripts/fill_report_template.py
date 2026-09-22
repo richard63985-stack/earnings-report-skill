@@ -69,16 +69,15 @@ def parse_markdown(md_path: Path) -> dict[str, str | list[str]]:
         summary_parts.append(current_heading)
         summary_parts.append(" ".join(current_body).strip())
 
+    investment_part_count = len(summary_parts)
     if advice:
         summary_parts.extend(["▌投资建议", advice])
 
     missing = []
     if not event:
         missing.append("## 事件")
-    if not summary_parts:
-        missing.append("## 投资要点")
-    if not advice:
-        missing.append("## 投资建议")
+    if investment_part_count != 6 or any(not part for part in summary_parts):
+        missing.append("## 投资要点 (three nonempty headings and bodies)")
     if not risk:
         missing.append("## 风险提示")
     if missing:
@@ -202,8 +201,6 @@ def validate_docx(template: Path, output: Path, expected: dict[str, str | list[s
         issues.append("namespace rewrite detected: ns0")
     if "mc:Ignorable" not in output_xml:
         issues.append("missing mc:Ignorable")
-    if '<w:trHeight w:val="7680"/>' in output_xml:
-        issues.append("main content row still uses height 7680")
 
     required_texts: list[str] = [
         str(expected["title"]),
@@ -374,9 +371,10 @@ def fill(args: argparse.Namespace) -> int:
 
     xml = replace_sdt_single(xml, "报告日期", args.date)
     xml = replace_sdt_single(xml, "标题", str(parsed["title"]))
-    xml = replace_sdt_single(xml, "副标题", args.subtitle)
-    xml = replace_sdt_single(xml, "投资评级", args.rating)
-    xml = replace_sdt_single(xml, "评级变动", args.rating_change)
+    original_xml = xml
+    for alias, value in [("副标题", args.subtitle), ("投资评级", args.rating), ("评级变动", args.rating_change)]:
+        if value is not None:
+            xml = replace_sdt_single(xml, alias, value)
     xml = replace_sdt_single(xml, "事件公告", str(parsed["event"]))
     xml = replace_sdt_paragraphs(xml, "摘要", [str(x) for x in parsed["summary_parts"]])
     xml = replace_sdt_single(xml, "风险提示", str(parsed["risk"]))
@@ -384,8 +382,22 @@ def fill(args: argparse.Namespace) -> int:
         xml = replace_sdt_single(xml, "报告编号", args.report_no, occurrence=0)
         xml = replace_sdt_single(xml, "报告编号", args.report_no, occurrence=1)
 
-    xml, layout_fixed = apply_layout_fix(xml)
+    layout_fixed = False
+    if args.fix_legacy_row_height:
+        xml, layout_fixed = apply_layout_fix(xml)
+    protected = ["作者显示", "行业相对表现", "行业相对市场走势", "行业相关研究报告", "作者所属分组", "自我介绍"]
+    protected += [alias for alias, value in [("副标题", args.subtitle), ("投资评级", args.rating), ("评级变动", args.rating_change), ("报告编号", args.report_no or None)] if value is None]
+    for alias in protected:
+        occurrences = len(re.findall(r'<w:alias\b[^>]*w:val="' + re.escape(alias) + '"', original_xml))
+        for occurrence in range(occurrences):
+            a, b = sdt_bounds_for_alias(original_xml, alias, occurrence)
+            c, d = sdt_bounds_for_alias(xml, alias, occurrence)
+            if original_xml[a:b] != xml[c:d]:
+                raise ValueError("Protected template field changed: " + alias)
     write_docx(template, output, xml)
+    with zipfile.ZipFile(template) as before, zipfile.ZipFile(output) as after:
+        if before.namelist() != after.namelist() or any(before.read(n) != after.read(n) for n in before.namelist() if n != "word/document.xml"):
+            raise ValueError("Unexpected change outside word/document.xml")
 
     issues = validate_docx(template, output, parsed)
     if issues:
@@ -437,16 +449,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--template", default="报告模板.docx", help="Word template path.")
     parser.add_argument("--output", required=True, help="Output docx path.")
     parser.add_argument("--date", required=True, help="Report date, e.g. 2026年06月23日.")
-    parser.add_argument("--subtitle", default="—计算机行业点评报告")
-    parser.add_argument("--rating", required=True, help="User-approved rating; never infer a default recommendation.")
-    parser.add_argument("--rating-change", required=True)
+    parser.add_argument("--subtitle", default=None, help="Explicitly authorized subtitle; omit to preserve template.")
+    parser.add_argument("--rating", default=None, help="User-approved rating; never infer a default recommendation.")
+    parser.add_argument("--rating-change", default=None)
     parser.add_argument("--report-no", default="", help="Optional report number.")
+    parser.add_argument("--fix-legacy-row-height", action="store_true", help="Apply the known 7680-row-height repair only when required for this template.")
     parser.add_argument("--word-check", action="store_true", help="Open with Word COM and print pages.")
     parser.add_argument("--export-pdf", default="", help="Optional PDF output path.")
     parser.add_argument(
         "--pdf-engine",
         choices=["word", "libreoffice", "auto"],
-        default="word",
+        default="auto",
         help="PDF export engine. Use 'auto' to try Word first, then LibreOffice.",
     )
     parser.add_argument("--soffice", default="", help="Optional explicit soffice executable path.")
@@ -459,8 +472,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.render_pages and not args.export_pdf:
         parser.error("--render-pages requires --export-pdf")
-    if not shutil.which("powershell"):
-        print("WARNING: powershell not found; Word COM checks will be unavailable.", file=sys.stderr)
+    if (args.word_check or args.pdf_engine == "word") and (sys.platform != "win32" or not shutil.which("pwsh")):
+        print("WARNING: Word COM unavailable in this environment.", file=sys.stderr)
     return fill(args)
 
 

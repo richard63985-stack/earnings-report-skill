@@ -31,7 +31,7 @@ class Workflow(unittest.TestCase):
     def config(self): return json.loads(json.dumps(self.cfg))
 
     def validate(self,cfg):
-        wp.validate_config(cfg,self.base,self.base/'unused.xlsx',self.base/'process')
+        wp.validate_config(cfg,self.base,self.base/'unused.xlsx',self.base/'unused-process')
 
     def test_word_and_hash(self):
         data=freeze(self.base/'report.docx')
@@ -72,7 +72,7 @@ class Workflow(unittest.TestCase):
 
     def test_fabricated_point_rejected(self):
         cfg=self.config();cfg['sections'][0]['points'][0]['text']='新增的无出处句子。'
-        with self.assertRaisesRegex(ValueError,'not in'):self.validate(cfg)
+        with self.assertRaisesRegex(ValueError,'complete body'):self.validate(cfg)
 
     def test_path_traversal_rejected(self):
         cfg=self.config();cfg['evidence']['../escape']=cfg['evidence']['source_0']
@@ -98,19 +98,28 @@ class Workflow(unittest.TestCase):
         self.assertEqual(ps_quote("a'b $x"),"'a''b $x'")
         if sys.platform!='win32':self.assertFalse(export_pdf_with_word(Path('a'),Path('b')))
 
+    def test_shared_regressions(self):
+        subprocess.run([sys.executable,str(SCRIPTS/'check_regressions.py'),'--browser'],check=True)
+
     def test_end_to_end_browser_excel(self):
         subprocess.run([sys.executable,str(SCRIPTS/'create_visual_workpaper.py'),'--config',str(self.base/'workpaper.json')],check=True)
         path=self.base/'workpaper.xlsx'
         with zipfile.ZipFile(path) as z:self.assertIsNone(z.testzip())
         wb=load_workbook(path)
         self.assertEqual(wb.sheetnames,[s['sheet'] for s in self.cfg['sections']])
-        for ws in wb:
-            self.assertEqual(len(ws._images),6)
+        for section in self.cfg['sections']:
+            ws=wb[section['sheet']]
+            self.assertEqual(len(ws._images),5)
             self.assertEqual(sum(img.anchor._from.col==4 for img in ws._images),2)
+            values=[c.value for row in ws for c in row]
+            for point in section['points']:
+                for key in ['text','review_inputs','review_result']:self.assertIn(point[key],values)
             self.assertIn('$E$',str(ws.print_area))
             self.assertFalse(any(c.data_type=='e' for row in ws for c in row))
         wb.close()
         manifest=json.loads((self.base/'process/visual_workpaper_manifest.json').read_text(encoding='utf-8'))
+        self.assertEqual(manifest['word_sha256'],self.cfg['word_sha256'])
+        self.assertEqual(manifest['xlsx_sha256'],hashlib.sha256(path.read_bytes()).hexdigest())
         self.assertEqual(len(manifest['source_screenshots']),4)
         for eid,item in manifest['source_screenshots'].items():
             self.assertGreater(item['highlight_count'],0)

@@ -1,4 +1,4 @@
 interface:
   display_name: "财报点评与配套底稿"
   short_description: "从官方材料到 Word 财报点评与逐句对照 Excel 底稿"
-  default_prompt: "使用 $earnings-report-workpaper，按我的材料与写作要求制作财报点评，并在我确认 Word 后制作对应底稿。"
+  default_prompt: "使用 $earnings-report-workpaper，沿用我的模板和写作要求制作财报点评，按本次确认或委托复核授权生成对应底稿，并检查最终交付版本。"
