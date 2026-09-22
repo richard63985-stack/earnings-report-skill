@@ -89,6 +89,8 @@ def run(base, browser=False):
 
 
 if __name__=='__main__':
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding='utf-8')
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output-dir');p.add_argument('--browser',action='store_true');args=p.parse_args()
     if args.output_dir:run(Path(args.output_dir).resolve(),args.browser)
     else:

@@ -16,6 +16,7 @@ import re
 import hashlib
 import json
 import math
+import sys
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -1006,4 +1007,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8")
     main()

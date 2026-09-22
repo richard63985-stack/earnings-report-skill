@@ -99,7 +99,9 @@ class Workflow(unittest.TestCase):
         if sys.platform!='win32':self.assertFalse(export_pdf_with_word(Path('a'),Path('b')))
 
     def test_shared_regressions(self):
-        subprocess.run([sys.executable,str(SCRIPTS/'check_regressions.py'),'--browser'],check=True)
+        subprocess.run([sys.executable,str(SCRIPTS/'check_regressions.py'),'--browser',
+                        '--output-dir',str(self.base/'回归 中文')],
+                       env={**os.environ,'PYTHONIOENCODING':'cp1252'},check=True)
 
     def test_end_to_end_browser_excel(self):
         subprocess.run([sys.executable,str(SCRIPTS/'create_visual_workpaper.py'),'--config',str(self.base/'workpaper.json')],check=True)
